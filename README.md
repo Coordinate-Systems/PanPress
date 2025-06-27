@@ -1,4 +1,4 @@
-# Obsidian Pandoc Plugin
+# PanPres
 
 A powerful document export plugin for [Obsidian](https://obsidian.md) that leverages [Pandoc](https://pandoc.org/) to convert your notes to various formats.
 
