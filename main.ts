@@ -9,12 +9,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as temp from 'temp';
 
 import { Notice, Plugin, FileSystemAdapter, MarkdownView } from 'obsidian';
 import { lookpath } from 'lookpath';
 import { pandoc, inputExtensions, outputFormats, OutputFormat, needsLaTeX, needsPandoc } from './pandoc';
 import * as YAML from 'yaml';
-import * as temp from 'temp';
 
 import render from './renderer';
 import PandocPluginSettingTab from './settings';
@@ -97,44 +97,25 @@ export default class PandocPlugin extends Plugin {
             return false;
         }
         
-        // Aggressive debug logging
-        console.log('Export availability check:', {
-            format,
-            file: file.substring(file.lastIndexOf('/') + 1), // Just filename for brevity
-            binaryMapInitialized: this.binaryMapInitialized,
-            pandocPath: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            needsPandoc: needsPandoc(format),
-            needsLaTeX: needsLaTeX(format),
-            result: this.binaryMapInitialized ? 
-                (needsPandoc(format) ? (this.features['pandoc'] || this.everFoundPandoc) : true) : 
-                true
-        });
-        
         // ALWAYS show commands if we haven't initialized binary map yet
         if (!this.binaryMapInitialized) {
-            console.log('Binary map not initialized, showing command');
             return true;
         }
         
         // ALWAYS show commands if we've ever found Pandoc (even if features got cleared)
         if (needsPandoc(format) && this.everFoundPandoc) {
-            console.log('Ever found Pandoc, showing command');
             return true;
         }
         
         // Check current binary availability
         if (needsPandoc(format) && !this.features['pandoc']) {
-            console.log('Needs Pandoc but not found, hiding command');
             return false;
         }
         
         if (needsLaTeX(format) && !this.features['pdflatex']) {
-            console.log('Needs LaTeX but not found, hiding command');
             return false;
         }
         
-        console.log('All checks passed, showing command');
         return true;
     }
 
@@ -148,20 +129,9 @@ export default class PandocPlugin extends Plugin {
             this.everFoundPandoc = true;
         }
         
-        // Debug logging
-        console.log('Pandoc binary map initialized:', {
-            pandoc: this.features['pandoc'],
-            pdflatex: this.features['pdflatex'],
-            everFoundPandoc: this.everFoundPandoc
-        });
     }
 
     async startPandocExport(inputFile: string, format: OutputFormat, extension: string, shortName: string) {
-        console.log('Starting export - binary state before:', {
-            pandoc: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            binaryMapInitialized: this.binaryMapInitialized
-        });
         
         new Notice(`Exporting ${inputFile} to ${shortName}`);
 
@@ -222,14 +192,23 @@ export default class PandocPlugin extends Plugin {
                 case 'md': {
                     // For markdown export, we still need to extract YAML for CLI args
                     const markdownContent = view ? view.data : await fs.promises.readFile(inputFile, 'utf8');
-                    const rawMetadata = this.getYAMLMetadata(markdownContent);
+                    
+                    // Process embeds in the markdown content
+                    const processedMarkdown = await this.processMarkdownEmbeds(markdownContent, inputFile);
+                    
+                    // Extract metadata and CLI args from the processed content
+                    const rawMetadata = this.getYAMLMetadata(processedMarkdown);
                     const currentFileDir = path.dirname(inputFile);
                     const vaultBasePath = this.vaultBasePath();
                     const { cliArgs } = await this.convertYamlToPandocArgs(rawMetadata, currentFileDir, vaultBasePath);
                     
+                    // Write processed content to a secure temporary file
+                    const tempFile = temp.path({ suffix: '.md' });
+                    await fs.promises.writeFile(tempFile, processedMarkdown, 'utf8');
+                    
                     const result = await pandoc(
                         {
-                            file: inputFile, format: 'markdown',
+                            file: tempFile, format: 'markdown',
                             pandoc: this.settings.pandoc || undefined, pdflatex: this.settings.pdflatex || undefined,
                             directory: path.dirname(inputFile),
                             documentArgs: cliArgs,
@@ -237,6 +216,13 @@ export default class PandocPlugin extends Plugin {
                         { file: outputFile, format },
                         this.settings.extraArguments.split('\n')
                     );
+                    
+                    // Clean up temporary file
+                    try {
+                        await fs.promises.unlink(tempFile);
+                    } catch (e) {
+                        console.warn('Could not clean up temporary file:', tempFile, e);
+                    }
                     error = result.error;
                     command = result.command;
                     break;
@@ -260,11 +246,6 @@ export default class PandocPlugin extends Plugin {
             console.error(e);
         }
         
-        console.log('Export finished - binary state after:', {
-            pandoc: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            binaryMapInitialized: this.binaryMapInitialized
-        });
     }
 
     override onunload() {
@@ -288,6 +269,80 @@ export default class PandocPlugin extends Plugin {
             return YAML.parse(frontmatter);
         }
         return {};
+    }
+
+    // Extract content without frontmatter (for embedded files)
+    private stripFrontmatter(markdown: string): string {
+        markdown = markdown.trim();
+        if (markdown.startsWith('---')) {
+            const trailing = markdown.substring(3);
+            const endIndex = trailing.indexOf('---');
+            if (endIndex !== -1) {
+                // Return content after the closing ---
+                return trailing.substring(endIndex + 3).trim();
+            }
+        }
+        // No frontmatter found, return as-is
+        return markdown;
+    }
+
+    // Process embeds in markdown content (for markdown export mode)
+    private async processMarkdownEmbeds(markdown: string, inputFile: string, parentFiles: string[] = []): Promise<string> {
+        const adapter = this.app.vault.adapter as FileSystemAdapter;
+        let processedMarkdown = markdown;
+        
+        // Find all embed patterns: ![[filename]] or ![[filename|alias]]
+        const embedPattern = /!\[\[([^\]\|]+)(\|[^\]]+)?\]\]/g;
+        const embeds = [...markdown.matchAll(embedPattern)];
+        
+        
+        for (const embed of embeds) {
+            const fullMatch = embed[0]; // Full ![[...]] text
+            const filename = embed[1].trim(); // Just the filename part
+            // const alias = embed[2]; // |alias part if present (unused for now)
+            
+            try {
+                // Find the file using Obsidian's link resolution
+                const relativePath = inputFile.startsWith(adapter.getBasePath()) 
+                    ? inputFile.substring(adapter.getBasePath().length + 1)
+                    : inputFile;
+                const subfolder = path.dirname(relativePath);
+                const file = this.app.metadataCache.getFirstLinkpathDest(filename, subfolder);
+                
+                if (!file) {
+                    console.error(`Could not resolve embedded file: ${filename}`);
+                    continue;
+                }
+                
+                // Get the full path of the embedded file
+                const embeddedFilePath = adapter.getFullPath(file.path);
+                
+                // Prevent infinite recursion
+                if (parentFiles.includes(embeddedFilePath)) {
+                    // Replace with link instead of embed
+                    processedMarkdown = processedMarkdown.replace(fullMatch, `[${filename}](${filename})`);
+                    continue;
+                }
+                
+                // Read the embedded file and strip its frontmatter
+                // (prevents embedded frontmatter from overriding main file's frontmatter)
+                const embeddedRawContent = await adapter.read(file.path);
+                const embeddedContent = this.stripFrontmatter(embeddedRawContent);
+                
+                // Recursively process embeds in the embedded file
+                const newParentFiles = [...parentFiles, embeddedFilePath];
+                const processedEmbeddedContent = await this.processMarkdownEmbeds(embeddedContent, embeddedFilePath, newParentFiles);
+                
+                // Replace the embed with the processed content
+                processedMarkdown = processedMarkdown.replace(fullMatch, processedEmbeddedContent);
+                
+            } catch (error) {
+                console.error(`Error processing embed ${filename}:`, error);
+                // Leave the embed as-is if we can't process it
+            }
+        }
+        
+        return processedMarkdown;
     }
 
     // Helper method for converting YAML to CLI args (duplicated from renderer.ts for markdown export)
