@@ -9,12 +9,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as temp from 'temp';
 
 import { Notice, Plugin, FileSystemAdapter, MarkdownView } from 'obsidian';
 import { lookpath } from 'lookpath';
 import { pandoc, inputExtensions, outputFormats, OutputFormat, needsLaTeX, needsPandoc } from './pandoc';
 import * as YAML from 'yaml';
-import * as temp from 'temp';
 
 import render from './renderer';
 import PandocPluginSettingTab from './settings';
@@ -232,8 +232,8 @@ export default class PandocPlugin extends Plugin {
                     const vaultBasePath = this.vaultBasePath();
                     const { cliArgs } = await this.convertYamlToPandocArgs(rawMetadata, currentFileDir, vaultBasePath);
                     
-                    // Write processed content to a temporary file
-                    const tempFile = inputFile.replace(/\.[^.]+$/, '.temp.md');
+                    // Write processed content to a secure temporary file
+                    const tempFile = temp.path({ suffix: '.md' });
                     await fs.promises.writeFile(tempFile, processedMarkdown, 'utf8');
                     
                     const result = await pandoc(
@@ -323,7 +323,10 @@ export default class PandocPlugin extends Plugin {
             
             try {
                 // Find the file using Obsidian's link resolution
-                const subfolder = inputFile.substring(adapter.getBasePath().length);
+                const relativePath = inputFile.startsWith(adapter.getBasePath()) 
+                    ? inputFile.substring(adapter.getBasePath().length + 1)
+                    : inputFile;
+                const subfolder = path.dirname(relativePath);
                 const file = this.app.metadataCache.getFirstLinkpathDest(filename, subfolder);
                 
                 if (!file) {
@@ -331,8 +334,11 @@ export default class PandocPlugin extends Plugin {
                     continue;
                 }
                 
+                // Get the full path of the embedded file
+                const embeddedFilePath = adapter.getFullPath(file.path);
+                
                 // Prevent infinite recursion
-                if (parentFiles.includes(file.path)) {
+                if (parentFiles.includes(embeddedFilePath)) {
                     // Replace with link instead of embed
                     processedMarkdown = processedMarkdown.replace(fullMatch, `[${filename}](${filename})`);
                     continue;
@@ -342,8 +348,8 @@ export default class PandocPlugin extends Plugin {
                 const embeddedContent = await adapter.read(file.path);
                 
                 // Recursively process embeds in the embedded file
-                const newParentFiles = [...parentFiles, inputFile];
-                const processedEmbeddedContent = await this.processMarkdownEmbeds(embeddedContent, file.path, newParentFiles);
+                const newParentFiles = [...parentFiles, embeddedFilePath];
+                const processedEmbeddedContent = await this.processMarkdownEmbeds(embeddedContent, embeddedFilePath, newParentFiles);
                 
                 // Replace the embed with the processed content
                 processedMarkdown = processedMarkdown.replace(fullMatch, processedEmbeddedContent);
