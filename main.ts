@@ -97,44 +97,25 @@ export default class PandocPlugin extends Plugin {
             return false;
         }
         
-        // Aggressive debug logging
-        console.log('Export availability check:', {
-            format,
-            file: file.substring(file.lastIndexOf('/') + 1), // Just filename for brevity
-            binaryMapInitialized: this.binaryMapInitialized,
-            pandocPath: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            needsPandoc: needsPandoc(format),
-            needsLaTeX: needsLaTeX(format),
-            result: this.binaryMapInitialized ? 
-                (needsPandoc(format) ? (this.features['pandoc'] || this.everFoundPandoc) : true) : 
-                true
-        });
-        
         // ALWAYS show commands if we haven't initialized binary map yet
         if (!this.binaryMapInitialized) {
-            console.log('Binary map not initialized, showing command');
             return true;
         }
         
         // ALWAYS show commands if we've ever found Pandoc (even if features got cleared)
         if (needsPandoc(format) && this.everFoundPandoc) {
-            console.log('Ever found Pandoc, showing command');
             return true;
         }
         
         // Check current binary availability
         if (needsPandoc(format) && !this.features['pandoc']) {
-            console.log('Needs Pandoc but not found, hiding command');
             return false;
         }
         
         if (needsLaTeX(format) && !this.features['pdflatex']) {
-            console.log('Needs LaTeX but not found, hiding command');
             return false;
         }
         
-        console.log('All checks passed, showing command');
         return true;
     }
 
@@ -148,20 +129,9 @@ export default class PandocPlugin extends Plugin {
             this.everFoundPandoc = true;
         }
         
-        // Debug logging
-        console.log('Pandoc binary map initialized:', {
-            pandoc: this.features['pandoc'],
-            pdflatex: this.features['pdflatex'],
-            everFoundPandoc: this.everFoundPandoc
-        });
     }
 
     async startPandocExport(inputFile: string, format: OutputFormat, extension: string, shortName: string) {
-        console.log('Starting export - binary state before:', {
-            pandoc: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            binaryMapInitialized: this.binaryMapInitialized
-        });
         
         new Notice(`Exporting ${inputFile} to ${shortName}`);
 
@@ -276,11 +246,6 @@ export default class PandocPlugin extends Plugin {
             console.error(e);
         }
         
-        console.log('Export finished - binary state after:', {
-            pandoc: this.features['pandoc'],
-            everFoundPandoc: this.everFoundPandoc,
-            binaryMapInitialized: this.binaryMapInitialized
-        });
     }
 
     override onunload() {
@@ -327,7 +292,7 @@ export default class PandocPlugin extends Plugin {
         let processedMarkdown = markdown;
         
         // Find all embed patterns: ![[filename]] or ![[filename|alias]]
-        const embedPattern = /!\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
+        const embedPattern = /!\[\[([^\]\|]+)(\|[^\]]+)?\]\]/g;
         const embeds = [...markdown.matchAll(embedPattern)];
         
         
