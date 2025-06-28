@@ -43,6 +43,6 @@ export default [
     },
   },
   {
-    ignores: ['node_modules/', 'main.js', '*.d.ts', '.obsidian/'],
+    ignores: ['node_modules/', 'main.js', '*.d.ts', '.obsidian/', 'generate-pandoc-schema.js', 'version-bump.mjs'],
   },
 ];

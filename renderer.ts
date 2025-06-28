@@ -16,6 +16,7 @@ import { FileSystemAdapter, MarkdownRenderer, MarkdownView, Notice } from 'obsid
 
 import PandocPlugin from './main';
 import { PandocPluginSettings, fileExists } from './global';
+import { PANDOC_OPTIONS_SCHEMA, isValidPandocOption, validatePandocOptionValue } from './pandoc-schema';
 import mathJaxFontCSS from './styles/mathjax-css';
 import appCSS, { variables as appCSSVariables } from './styles/app-css';
 
@@ -137,11 +138,34 @@ async function convertYamlToPandocArgs(
             // Extract CLI argument name (remove 'pandoc-' prefix)
             const argName = key.substring(7);
             
+            // Validate the option exists
+            if (!isValidPandocOption(argName)) {
+                new Notice(`Unknown pandoc option: ${argName}. Check the YAML frontmatter.`);
+                console.warn(`Unknown pandoc option: ${argName}`);
+                continue;
+            }
+            
+            // Get option schema
+            const optionSchema = PANDOC_OPTIONS_SCHEMA[argName];
+            
+            // Validate the value
+            if (!validatePandocOptionValue(argName, value)) {
+                new Notice(`Invalid value for pandoc option ${argName}: ${value}`);
+                console.warn(`Invalid value for pandoc option ${argName}:`, value);
+                continue;
+            }
+            
+            // Handle different value types
             if (value === true) {
-                // Boolean true: --flag
-                cliArgs.push(`--${argName}`);
+                // Boolean true: --flag (or --flag=true for non-flag-only options)
+                if (optionSchema.flagOnly) {
+                    cliArgs.push(`--${argName}`);
+                } else {
+                    // For non-flag-only boolean options, use explicit true value
+                    cliArgs.push(`--${argName}=true`);
+                }
             } else if (value === false || value === null || value === undefined) {
-                // Boolean false/null/undefined: skip
+                // Boolean false/null/undefined: skip entirely
                 continue;
             } else if (Array.isArray(value)) {
                 // Array: multiple arguments with same flag
