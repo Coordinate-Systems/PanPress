@@ -222,14 +222,23 @@ export default class PandocPlugin extends Plugin {
                 case 'md': {
                     // For markdown export, we still need to extract YAML for CLI args
                     const markdownContent = view ? view.data : await fs.promises.readFile(inputFile, 'utf8');
-                    const rawMetadata = this.getYAMLMetadata(markdownContent);
+                    
+                    // Process embeds in the markdown content
+                    const processedMarkdown = await this.processMarkdownEmbeds(markdownContent, inputFile);
+                    
+                    // Extract metadata and CLI args from the processed content
+                    const rawMetadata = this.getYAMLMetadata(processedMarkdown);
                     const currentFileDir = path.dirname(inputFile);
                     const vaultBasePath = this.vaultBasePath();
                     const { cliArgs } = await this.convertYamlToPandocArgs(rawMetadata, currentFileDir, vaultBasePath);
                     
+                    // Write processed content to a temporary file
+                    const tempFile = inputFile.replace(/\.[^.]+$/, '.temp.md');
+                    await fs.promises.writeFile(tempFile, processedMarkdown, 'utf8');
+                    
                     const result = await pandoc(
                         {
-                            file: inputFile, format: 'markdown',
+                            file: tempFile, format: 'markdown',
                             pandoc: this.settings.pandoc || undefined, pdflatex: this.settings.pdflatex || undefined,
                             directory: path.dirname(inputFile),
                             documentArgs: cliArgs,
@@ -237,6 +246,13 @@ export default class PandocPlugin extends Plugin {
                         { file: outputFile, format },
                         this.settings.extraArguments.split('\n')
                     );
+                    
+                    // Clean up temporary file
+                    try {
+                        await fs.promises.unlink(tempFile);
+                    } catch (e) {
+                        console.warn('Could not clean up temporary file:', tempFile, e);
+                    }
                     error = result.error;
                     command = result.command;
                     break;
@@ -288,6 +304,57 @@ export default class PandocPlugin extends Plugin {
             return YAML.parse(frontmatter);
         }
         return {};
+    }
+
+    // Process embeds in markdown content (for markdown export mode)
+    private async processMarkdownEmbeds(markdown: string, inputFile: string, parentFiles: string[] = []): Promise<string> {
+        const adapter = this.app.vault.adapter as FileSystemAdapter;
+        let processedMarkdown = markdown;
+        
+        // Find all embed patterns: ![[filename]] or ![[filename|alias]]
+        const embedPattern = /!\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
+        const embeds = [...markdown.matchAll(embedPattern)];
+        
+        
+        for (const embed of embeds) {
+            const fullMatch = embed[0]; // Full ![[...]] text
+            const filename = embed[1].trim(); // Just the filename part
+            // const alias = embed[2]; // |alias part if present (unused for now)
+            
+            try {
+                // Find the file using Obsidian's link resolution
+                const subfolder = inputFile.substring(adapter.getBasePath().length);
+                const file = this.app.metadataCache.getFirstLinkpathDest(filename, subfolder);
+                
+                if (!file) {
+                    console.error(`Could not resolve embedded file: ${filename}`);
+                    continue;
+                }
+                
+                // Prevent infinite recursion
+                if (parentFiles.includes(file.path)) {
+                    // Replace with link instead of embed
+                    processedMarkdown = processedMarkdown.replace(fullMatch, `[${filename}](${filename})`);
+                    continue;
+                }
+                
+                // Read the embedded file
+                const embeddedContent = await adapter.read(file.path);
+                
+                // Recursively process embeds in the embedded file
+                const newParentFiles = [...parentFiles, inputFile];
+                const processedEmbeddedContent = await this.processMarkdownEmbeds(embeddedContent, file.path, newParentFiles);
+                
+                // Replace the embed with the processed content
+                processedMarkdown = processedMarkdown.replace(fullMatch, processedEmbeddedContent);
+                
+            } catch (error) {
+                console.error(`Error processing embed ${filename}:`, error);
+                // Leave the embed as-is if we can't process it
+            }
+        }
+        
+        return processedMarkdown;
     }
 
     // Helper method for converting YAML to CLI args (duplicated from renderer.ts for markdown export)

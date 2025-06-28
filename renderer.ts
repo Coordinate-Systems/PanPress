@@ -27,6 +27,7 @@ export default async function render (plugin: PandocPlugin, view: MarkdownView,
     inputFile: string, outputFormat: string, parentFiles: string[] = []):
     Promise<{ html: string, metadata: { [index: string]: string }, cliArgs: string[] }>
 {
+    
     // Use Obsidian's markdown renderer to render to a hidden <div>
     const markdown = view.data;
     const wrapper = document.createElement('div');
