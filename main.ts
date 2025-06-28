@@ -306,6 +306,21 @@ export default class PandocPlugin extends Plugin {
         return {};
     }
 
+    // Extract content without frontmatter (for embedded files)
+    private stripFrontmatter(markdown: string): string {
+        markdown = markdown.trim();
+        if (markdown.startsWith('---')) {
+            const trailing = markdown.substring(3);
+            const endIndex = trailing.indexOf('---');
+            if (endIndex !== -1) {
+                // Return content after the closing ---
+                return trailing.substring(endIndex + 3).trim();
+            }
+        }
+        // No frontmatter found, return as-is
+        return markdown;
+    }
+
     // Process embeds in markdown content (for markdown export mode)
     private async processMarkdownEmbeds(markdown: string, inputFile: string, parentFiles: string[] = []): Promise<string> {
         const adapter = this.app.vault.adapter as FileSystemAdapter;
@@ -344,8 +359,10 @@ export default class PandocPlugin extends Plugin {
                     continue;
                 }
                 
-                // Read the embedded file
-                const embeddedContent = await adapter.read(file.path);
+                // Read the embedded file and strip its frontmatter
+                // (prevents embedded frontmatter from overriding main file's frontmatter)
+                const embeddedRawContent = await adapter.read(file.path);
+                const embeddedContent = this.stripFrontmatter(embeddedRawContent);
                 
                 // Recursively process embeds in the embedded file
                 const newParentFiles = [...parentFiles, embeddedFilePath];
