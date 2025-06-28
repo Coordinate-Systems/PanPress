@@ -300,6 +300,8 @@ async function postProcessRenderedHTML(plugin: PandocPlugin, inputFile: string, 
     const dirname = path.dirname(inputFile);
     const adapter = plugin.app.vault.adapter as FileSystemAdapter;
     const settings = plugin.settings;
+    
+    // Process embedded content with enhanced detection
     // Fix <span src="image.png">
     for (let span of Array.from(wrapper.querySelectorAll('span[src$=".png"], span[src$=".jpg"], span[src$=".gif"], span[src$=".jpeg"]'))) {
         span.innerHTML = '';
@@ -311,6 +313,12 @@ async function postProcessRenderedHTML(plugin: PandocPlugin, inputFile: string, 
         if (src) {
             const subfolder = inputFile.substring(adapter.getBasePath().length);  // TODO: this is messy
             const file = plugin.app.metadataCache.getFirstLinkpathDest(src, subfolder);
+            
+            if (!file) {
+                console.error(`Pandoc plugin: Could not resolve embedded file: ${src}`);
+                continue;
+            }
+            
             try {
                 if (parentFiles.indexOf(file.path) !== -1) {
                     // We've got an infinite recursion on our hands
@@ -331,6 +339,51 @@ async function postProcessRenderedHTML(plugin: PandocPlugin, inputFile: string, 
             }
         }
     }
+    
+    // Additional embed detection: spans with data-href attributes (newer Obsidian versions)
+    for (let span of Array.from(wrapper.querySelectorAll('span[data-href]'))) {
+        const href = span.getAttribute('data-href');
+        if (href && !href.startsWith('http') && !href.includes('.png') && !href.includes('.jpg') && !href.includes('.gif') && !href.includes('.jpeg')) {
+            // This might be an embed - try to process it like an internal-embed
+            const subfolder = inputFile.substring(adapter.getBasePath().length);
+            const file = plugin.app.metadataCache.getFirstLinkpathDest(href, subfolder);
+            
+            if (file && parentFiles.indexOf(file.path) === -1) {
+                try {
+                    const markdown = await adapter.read(file.path);
+                    const newParentFiles = [...parentFiles];
+                    newParentFiles.push(inputFile);
+                    const html = await render(plugin, { data: markdown } as MarkdownView, file.path, outputFormat, newParentFiles);
+                    span.outerHTML = html.html;
+                } catch (e) {
+                    console.error("Pandoc plugin error loading embed via data-href: " + e.toString());
+                }
+            }
+        }
+    }
+    
+    // Additional embed detection: div elements with embed classes
+    for (let div of Array.from(wrapper.querySelectorAll('div[class*="embed"]'))) {
+        // Check if it has src or data-href
+        const src = div.getAttribute('src') || div.getAttribute('data-href');
+        if (src && !src.startsWith('http') && !src.includes('.png') && !src.includes('.jpg') && !src.includes('.gif') && !src.includes('.jpeg')) {
+            const subfolder = inputFile.substring(adapter.getBasePath().length);
+            const file = plugin.app.metadataCache.getFirstLinkpathDest(src, subfolder);
+            
+            if (file && parentFiles.indexOf(file.path) === -1) {
+                try {
+                    const markdown = await adapter.read(file.path);
+                    const newParentFiles = [...parentFiles];
+                    newParentFiles.push(inputFile);
+                    const html = await render(plugin, { data: markdown } as MarkdownView, file.path, outputFormat, newParentFiles);
+                    div.outerHTML = html.html;
+                } catch (e) {
+                    console.error("Pandoc plugin error loading embed via div: " + e.toString());
+                }
+            }
+        }
+    }
+    
     // Fix <a href="app://obsidian.md/markdown_file_without_extension">
     const prefix = 'app://obsidian.md/';
     for (let a of Array.from(wrapper.querySelectorAll('a'))) {
